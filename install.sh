@@ -140,14 +140,13 @@ esac
 echo ""
 echo "=============================================="
 echo " Введите домены, которые пойдут напрямую (через запятую)."
-echo " По умолчанию: .ru, yandex.net, yastatic.net, xn--p1ai (.рф)"
+echo " По умолчанию: .ru, yandex.net, yastatic.net, .xn--p1ai (.рф)"
 echo " (нажмите Enter, чтобы оставить по умолчанию)"
 echo "=============================================="
 read -r -p "Домены: " EXCLUDE_INPUT
-[ -z "$EXCLUDE_INPUT" ] && EXCLUDE_DOMAINS=".ru,yandex.net,yastatic.net,xn--p1ai" || EXCLUDE_DOMAINS="$EXCLUDE_INPUT"
+[ -z "$EXCLUDE_INPUT" ] && EXCLUDE_DOMAINS=".ru,yandex.net,yastatic.net,.xn--p1ai" || EXCLUDE_DOMAINS="$EXCLUDE_INPUT"
+EXCLUDE_JSON=$(echo "$EXCLUDE_DOMAINS" | sed 's/,/","/g; s/^/"/; s/$/"/')
 
-# Генерация JSON-массива с кавычками
-EXCLUDE_JSON=$(echo "$EXCLUDE_DOMAINS" | awk -F, '{for(i=1;i<=NF;i++){gsub(/^[[:space:]]+|[[:space:]]+$/,"",$i); printf "\"%s\"", $i; if(i<NF) printf ","}}')
 
 # ---------- 7. Сохранение параметров ----------
 mkdir -p /etc/sing-box
