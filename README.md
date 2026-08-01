@@ -4,7 +4,7 @@
 ## Установка
 
 ```sh
-curl -sSL https://raw.githubusercontent.com/KoromeloDev/openwrt-singbox-autoconf/main/install.sh | sh
+wget -O /tmp/install.sh https://raw.githubusercontent.com/KoromeloDev/openwrt-singbox-autoconf/main/install.sh && /tmp/install.sh
 ```
 
 ## Возможности

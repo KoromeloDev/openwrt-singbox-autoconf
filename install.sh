@@ -266,6 +266,7 @@ echo ">>> Сервис sing-box запущен и добавлен в автоз
 # ---------- 11. Автообновление подписки ----------
 if [ "$USE_SUB" -eq 1 ]; then
     echo ">>> Загрузка update-sub.sh..."
+    mkdir -p /usr/local/bin
     wget -q -O /usr/local/bin/update-sub.sh "${REPO_RAW}/update-sub.sh" || { echo "Ошибка загрузки update-sub.sh"; exit 1; }
     chmod +x /usr/local/bin/update-sub.sh
 
