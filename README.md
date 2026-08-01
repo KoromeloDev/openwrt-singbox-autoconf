@@ -4,7 +4,7 @@
 ## Установка
 
 ```sh
-wget -O /tmp/install.sh https://raw.githubusercontent.com/KoromeloDev/openwrt-singbox-autoconf/main/install.sh && /tmp/install.sh
+wget -O /tmp/install.sh https://raw.githubusercontent.com/KoromeloDev/openwrt-singbox-autoconf/main/install.sh && chmod +x /tmp/install.sh && /tmp/install.sh
 ```
 
 ## Возможности

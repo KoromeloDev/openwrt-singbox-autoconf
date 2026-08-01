@@ -37,6 +37,11 @@ sed -i "s/^SHORT_ID=.*/SHORT_ID=\"$SHORT_ID\"/" /etc/sing-box/install.conf
 sed -i "s/^SERVER_NAME=.*/SERVER_NAME=\"$SERVER_NAME\"/" /etc/sing-box/install.conf
 sed -i "s/^FINGERPRINT=.*/FINGERPRINT=\"$FINGERPRINT\"/" /etc/sing-box/install.conf
 
+# Определяем IP сервера
+PROXY_IP=$(nslookup "$SERVER" 2>/dev/null | grep -A1 "Name:" | grep "Address" | awk '{print $2}' | head -1)
+[ -z "$PROXY_IP" ] && PROXY_IP=$(ping -c1 "$SERVER" 2>/dev/null | grep "PING" | grep -oE '\([0-9.]*\)' | tr -d '()')
+sed -i "s/^PROXY_IP=.*/PROXY_IP=\"$PROXY_IP\"/" /etc/sing-box/install.conf
+
 . /etc/sing-box/install.conf
 cat > /etc/sing-box/config.json <<EOF
 {

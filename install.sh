@@ -207,9 +207,13 @@ generate_config() {
       "tag": "direct"
     }
   ],
+  "dns": {
+    "servers": []
+  },
   "route": {
     "rules": [
       { "ip_is_private": true, "outbound": "direct" },
+      { "protocol": "dns", "outbound": "direct" },
       { "domain_suffix": [${EXCLUDE_JSON}], "outbound": "direct" }
     ],
     "final": "proxy"
@@ -219,13 +223,57 @@ EOF
 }
 
 generate_config
+# Определяем IP прокси-сервера (чтобы исключить его из правил)
+echo ">>> Определение IP сервера $SERVER..."
+PROXY_IP=$(nslookup "$SERVER" 2>/dev/null | grep -A1 "Name:" | grep "Address" | awk '{print $2}' | head -1)
+if [ -z "$PROXY_IP" ]; then
+    # Пробуем через ping
+    PROXY_IP=$(ping -c1 "$SERVER" 2>/dev/null | grep "PING" | grep -oE '\([0-9.]*\)' | tr -d '()')
+fi
+if [ -z "$PROXY_IP" ]; then
+    echo "    Не удалось определить IP сервера. Продолжаем без исключения IP."
+    PROXY_IP=""
+else
+    echo "    IP сервера: $PROXY_IP"
+fi
+
+# Сохраняем IP в install.conf
+echo "PROXY_IP=\"$PROXY_IP\"" >> /etc/sing-box/install.conf
 echo ">>> Конфиг сохранён в /etc/sing-box/config.json"
 
-# ---------- 9. Скачивание и применение внешних файлов ----------
-echo ">>> Загрузка firewall.nft..."
-wget -q -O /etc/sing-box/firewall.nft "${REPO_RAW}/firewall.nft" || { echo "Ошибка загрузки firewall.nft"; exit 1; }
+# ---------- 9. Создание правил nftables ----------
+echo ">>> Создание правил nftables..."
+cat > /etc/sing-box/firewall.nft <<NFTEOF
+    #!/bin/sh
+    nft delete table inet singbox 2>/dev/null || true
+    nft add table inet singbox
+    nft add chain inet singbox prerouting { type filter hook prerouting priority mangle \; }
+
+    # Пропускаем локальный трафик
+    nft add rule inet singbox prerouting iifname "lo" accept
+
+    # Пропускаем частные подсети
+    nft add rule inet singbox prerouting ip daddr { 127.0.0.0/8, 192.168.0.0/16, 172.16.0.0/12, 10.0.0.0/8 } accept
+
+    # Пропускаем уже помеченные пакеты
+    nft add rule inet singbox prerouting meta mark 0x1 accept
+
+    # Пропускаем важные порты
+    nft add rule inet singbox prerouting tcp dport { 22, 53, 123, $PORT } accept
+    nft add rule inet singbox prerouting udp dport { 53, 123 } accept
+    nft add rule inet singbox prerouting tcp sport { 22, 53, 123, $PORT } accept
+    nft add rule inet singbox prerouting udp sport { 53, 123 } accept
+
+    # Пропускаем трафик к прокси-серверу
+    if [ -n "$PROXY_IP" ]; then
+        nft add rule inet singbox prerouting ip daddr $PROXY_IP accept
+    fi
+
+    # Всё остальное — в TProxy
+    nft add rule inet singbox prerouting meta l4proto tcp tproxy ip to 127.0.0.1:12345
+    nft add rule inet singbox prerouting meta l4proto udp tproxy ip to 127.0.0.1:12345
+NFTEOF
 chmod +x /etc/sing-box/firewall.nft
-/etc/sing-box/firewall.nft
 
 ip rule add fwmark 1 table 100 2>/dev/null || true
 ip route add local default dev lo table 100 2>/dev/null || true
@@ -282,5 +330,5 @@ echo ""
 echo "=============================================="
 echo " Установка завершена!"
 echo " Проверьте работу:"
-echo "   curl -x http://127.0.0.1:12345 http://ip-api.com/json"
+echo " curl http://ip-api.com/json"
 echo "=============================================="
