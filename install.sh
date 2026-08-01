@@ -145,7 +145,7 @@ echo " (нажмите Enter, чтобы оставить по умолчани�
 echo "=============================================="
 read -r -p "Домены: " EXCLUDE_INPUT
 [ -z "$EXCLUDE_INPUT" ] && EXCLUDE_DOMAINS=".ru,yandex.net,yastatic.net,.xn--p1ai" || EXCLUDE_DOMAINS="$EXCLUDE_INPUT"
-EXCLUDE_JSON=$(echo "$EXCLUDE_DOMAINS" | sed 's/,/","/g; s/^/"/; s/$/"/')
+EXCLUDE_JSON=$(echo "$EXCLUDE_DOMAINS" | sed 's/,/","/g' | sed 's/^/"/' | sed 's/$/"/')
 
 
 # ---------- 7. Сохранение параметров ----------
