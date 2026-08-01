@@ -152,7 +152,7 @@ EXCLUDE_JSON=$(echo "$EXCLUDE_DOMAINS" | sed 's/,/","/g' | sed 's/^/"/' | sed 's
 mkdir -p /etc/sing-box
 cat > /etc/sing-box/install.conf <<EOF
 USE_SUB=$USE_SUB
-EXCLUDE_JSON=$EXCLUDE_JSON
+EXCLUDE_JSON='${EXCLUDE_JSON}'
 SUB_URL="${SUB_URL}"
 SERVER="$SERVER"
 PORT="$PORT"
