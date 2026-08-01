@@ -52,7 +52,7 @@ cat > /etc/sing-box/config.json <<EOF
       "listen": "127.0.0.1",
       "listen_port": 12345,
       "sniff": true,
-      "sniff_override_destination": false
+      "sniff_override_destination": true
     }
   ],
   "outbounds": [
@@ -82,15 +82,32 @@ cat > /etc/sing-box/config.json <<EOF
       "tag": "direct"
     }
   ],
+  "dns": {
+    "servers": []
+  },
   "route": {
     "rules": [
       { "ip_is_private": true, "outbound": "direct" },
+      { "protocol": "dns", "outbound": "direct" },
       { "domain_suffix": [${EXCLUDE_JSON}], "outbound": "direct" }
     ],
     "final": "proxy"
   }
 }
 EOF
+
+# Обновляем firewall (на случай смены IP)
+if [ -n "$PROXY_IP" ]; then
+    cat > /etc/sing-box/firewall.nft <<NFTEOF
+#!/bin/sh
+nft delete table inet singbox 2>/dev/null || true
+nft add table inet singbox
+nft add chain inet singbox prerouting { type filter hook prerouting priority mangle \; }
+nft add rule inet singbox prerouting iifname "br-lan" ip daddr != $PROXY_IP tcp dport != { 22, 53, 123 } meta mark set 1 tproxy ip to 127.0.0.1:12345
+NFTEOF
+    chmod +x /etc/sing-box/firewall.nft
+    /etc/sing-box/firewall.nft
+fi
 
 /etc/init.d/sing-box restart
 echo "$(date): подписка обновлена" >> /var/log/sing-box-update.log

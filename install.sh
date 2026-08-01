@@ -20,9 +20,10 @@ else
 fi
 
 # ---------- 1. Очистка старых правил ----------
-echo ">>> Очистка старых правил nftables..."
+echo ">>> Очистка старых правил..."
 nft delete table inet podkop 2>/dev/null || true
 nft delete table inet singbox 2>/dev/null || true
+iptables -t nat -F PREROUTING 2>/dev/null || true
 ip rule del fwmark 1 table 100 2>/dev/null || true
 ip route del local default dev lo table 100 2>/dev/null || true
 
@@ -147,8 +148,20 @@ read -r -p "Домены: " EXCLUDE_INPUT
 [ -z "$EXCLUDE_INPUT" ] && EXCLUDE_DOMAINS=".ru,yandex.net,yastatic.net,.xn--p1ai" || EXCLUDE_DOMAINS="$EXCLUDE_INPUT"
 EXCLUDE_JSON=$(echo "$EXCLUDE_DOMAINS" | sed 's/,/","/g' | sed 's/^/"/' | sed 's/$/"/')
 
+# ---------- 7. Определение IP сервера ----------
+echo ">>> Определение IP сервера $SERVER..."
+PROXY_IP=$(nslookup "$SERVER" 2>/dev/null | grep -A1 "Name:" | grep "Address" | awk '{print $2}' | head -1)
+if [ -z "$PROXY_IP" ]; then
+    PROXY_IP=$(ping -c1 "$SERVER" 2>/dev/null | grep "PING" | grep -oE '\([0-9.]*\)' | tr -d '()')
+fi
+if [ -z "$PROXY_IP" ]; then
+    echo "    Не удалось определить IP сервера. Продолжаем без исключения IP."
+    PROXY_IP=""
+else
+    echo "    IP сервера: $PROXY_IP"
+fi
 
-# ---------- 7. Сохранение параметров ----------
+# ---------- 8. Сохранение параметров ----------
 mkdir -p /etc/sing-box
 cat > /etc/sing-box/install.conf <<EOF
 USE_SUB=$USE_SUB
@@ -162,9 +175,10 @@ PUBLIC_KEY="$PUBLIC_KEY"
 SHORT_ID="$SHORT_ID"
 SERVER_NAME="$SERVER_NAME"
 FINGERPRINT="$FINGERPRINT"
+PROXY_IP="$PROXY_IP"
 EOF
 
-# ---------- 8. Генерация конфига ----------
+# ---------- 9. Генерация конфига ----------
 generate_config() {
     . /etc/sing-box/install.conf
 
@@ -177,7 +191,7 @@ generate_config() {
       "listen": "127.0.0.1",
       "listen_port": 12345,
       "sniff": true,
-      "sniff_override_destination": false
+      "sniff_override_destination": true
     }
   ],
   "outbounds": [
@@ -223,62 +237,37 @@ EOF
 }
 
 generate_config
-# Определяем IP прокси-сервера (чтобы исключить его из правил)
-echo ">>> Определение IP сервера $SERVER..."
-PROXY_IP=$(nslookup "$SERVER" 2>/dev/null | grep -A1 "Name:" | grep "Address" | awk '{print $2}' | head -1)
-if [ -z "$PROXY_IP" ]; then
-    # Пробуем через ping
-    PROXY_IP=$(ping -c1 "$SERVER" 2>/dev/null | grep "PING" | grep -oE '\([0-9.]*\)' | tr -d '()')
-fi
-if [ -z "$PROXY_IP" ]; then
-    echo "    Не удалось определить IP сервера. Продолжаем без исключения IP."
-    PROXY_IP=""
-else
-    echo "    IP сервера: $PROXY_IP"
-fi
-
-# Сохраняем IP в install.conf
-echo "PROXY_IP=\"$PROXY_IP\"" >> /etc/sing-box/install.conf
 echo ">>> Конфиг сохранён в /etc/sing-box/config.json"
 
-# ---------- 9. Создание правил nftables ----------
+# ---------- 10. Создание правил nftables ----------
 echo ">>> Создание правил nftables..."
 cat > /etc/sing-box/firewall.nft <<NFTEOF
-    #!/bin/sh
-    nft delete table inet singbox 2>/dev/null || true
-    nft add table inet singbox
-    nft add chain inet singbox prerouting { type filter hook prerouting priority mangle \; }
+#!/bin/sh
+nft delete table inet singbox 2>/dev/null || true
+nft add table inet singbox
+nft add chain inet singbox prerouting { type filter hook prerouting priority mangle \; }
 
-    # Пропускаем локальный трафик
-    nft add rule inet singbox prerouting iifname "lo" accept
-
-    # Пропускаем частные подсети
-    nft add rule inet singbox prerouting ip daddr { 127.0.0.0/8, 192.168.0.0/16, 172.16.0.0/12, 10.0.0.0/8 } accept
-
-    # Пропускаем уже помеченные пакеты
-    nft add rule inet singbox prerouting meta mark 0x1 accept
-
-    # Пропускаем важные порты
-    nft add rule inet singbox prerouting tcp dport { 22, 53, 123, $PORT } accept
-    nft add rule inet singbox prerouting udp dport { 53, 123 } accept
-    nft add rule inet singbox prerouting tcp sport { 22, 53, 123, $PORT } accept
-    nft add rule inet singbox prerouting udp sport { 53, 123 } accept
-
-    # Пропускаем трафик к прокси-серверу
-    if [ -n "$PROXY_IP" ]; then
-        nft add rule inet singbox prerouting ip daddr $PROXY_IP accept
-    fi
-
-    # Всё остальное — в TProxy
-    nft add rule inet singbox prerouting meta l4proto tcp tproxy ip to 127.0.0.1:12345
-    nft add rule inet singbox prerouting meta l4proto udp tproxy ip to 127.0.0.1:12345
+# Правило: всё из LAN (кроме исключений) помечаем меткой 1 и отправляем в TProxy
 NFTEOF
+
+if [ -n "$PROXY_IP" ]; then
+    echo "nft add rule inet singbox prerouting iifname \"br-lan\" ip daddr != $PROXY_IP tcp dport != { 22, 53, 123 } meta mark set 1 tproxy ip to 127.0.0.1:12345" >> /etc/sing-box/firewall.nft
+else
+    echo "nft add rule inet singbox prerouting iifname \"br-lan\" tcp dport != { 22, 53, 123 } meta mark set 1 tproxy ip to 127.0.0.1:12345" >> /etc/sing-box/firewall.nft
+fi
+
 chmod +x /etc/sing-box/firewall.nft
+/etc/sing-box/firewall.nft
 
 ip rule add fwmark 1 table 100 2>/dev/null || true
 ip route add local default dev lo table 100 2>/dev/null || true
 
-if ! grep -q "ip rule add fwmark 1 table 100" /etc/rc.local 2>/dev/null; then
+# Убедимся, что rc.local существует и исполняемый
+touch /etc/rc.local
+chmod +x /etc/rc.local
+
+# Добавляем правила, если их ещё нет
+if ! grep -q "fwmark 1 table 100" /etc/rc.local 2>/dev/null; then
     echo "ip rule add fwmark 1 table 100" >> /etc/rc.local
     echo "ip route add local default dev lo table 100" >> /etc/rc.local
     echo "/etc/sing-box/firewall.nft" >> /etc/rc.local
@@ -286,7 +275,7 @@ fi
 
 echo ">>> Правила nftables и маршрутизация настроены"
 
-# ---------- 10. Автозапуск ----------
+# ---------- 11. Автозапуск ----------
 if [ -x /etc/init.d/sing-box ]; then
     /etc/init.d/sing-box enable
     /etc/init.d/sing-box restart
@@ -312,7 +301,7 @@ fi
 
 echo ">>> Сервис sing-box запущен и добавлен в автозагрузку"
 
-# ---------- 11. Автообновление подписки ----------
+# ---------- 12. Автообновление подписки ----------
 if [ "$USE_SUB" -eq 1 ]; then
     echo ">>> Загрузка update-sub.sh..."
     mkdir -p /usr/local/bin
