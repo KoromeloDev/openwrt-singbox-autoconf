@@ -16,6 +16,7 @@ fi
 rm -f /tmp/sub_raw.txt
 [ -z "$SUB_LINK" ] && { echo "$(date): ошибка парсинга" >> /var/log/sing-box-update.log; exit 1; }
 
+# Извлекаем параметры
 UUID=$(echo "$SUB_LINK" | sed -n 's|vless://\([^@]*\)@.*|\1|p')
 SERVER=$(echo "$SUB_LINK" | sed -n 's|.*@\([^:]*\):.*|\1|p')
 PORT=$(echo "$SUB_LINK" | sed -n 's|.*:\([0-9]*\)[?/].*|\1|p' | head -1)
@@ -28,31 +29,33 @@ SERVER_NAME=$(echo "$PARAMS" | sed -n 's|.*sni=\([^&]*\).*|\1|p')
 FINGERPRINT=$(echo "$PARAMS" | sed -n 's|.*fp=\([^&]*\).*|\1|p')
 [ -z "$FINGERPRINT" ] && FINGERPRINT="firefox"
 
-sed -i "s/^SERVER=.*/SERVER=\"$SERVER\"/" /etc/sing-box/install.conf
-sed -i "s/^PORT=.*/PORT=$PORT/" /etc/sing-box/install.conf
-sed -i "s/^UUID=.*/UUID=\"$UUID\"/" /etc/sing-box/install.conf
-sed -i "s/^FLOW=.*/FLOW=\"$FLOW\"/" /etc/sing-box/install.conf
-sed -i "s/^PUBLIC_KEY=.*/PUBLIC_KEY=\"$PUBLIC_KEY\"/" /etc/sing-box/install.conf
-sed -i "s/^SHORT_ID=.*/SHORT_ID=\"$SHORT_ID\"/" /etc/sing-box/install.conf
-sed -i "s/^SERVER_NAME=.*/SERVER_NAME=\"$SERVER_NAME\"/" /etc/sing-box/install.conf
-sed -i "s/^FINGERPRINT=.*/FINGERPRINT=\"$FINGERPRINT\"/" /etc/sing-box/install.conf
+# Обновляем install.conf
+sed -i "s|^SERVER=.*|SERVER=\"$SERVER\"|" /etc/sing-box/install.conf
+sed -i "s|^PORT=.*|PORT=$PORT|" /etc/sing-box/install.conf
+sed -i "s|^UUID=.*|UUID=\"$UUID\"|" /etc/sing-box/install.conf
+sed -i "s|^FLOW=.*|FLOW=\"$FLOW\"|" /etc/sing-box/install.conf
+sed -i "s|^PUBLIC_KEY=.*|PUBLIC_KEY=\"$PUBLIC_KEY\"|" /etc/sing-box/install.conf
+sed -i "s|^SHORT_ID=.*|SHORT_ID=\"$SHORT_ID\"|" /etc/sing-box/install.conf
+sed -i "s|^SERVER_NAME=.*|SERVER_NAME=\"$SERVER_NAME\"|" /etc/sing-box/install.conf
+sed -i "s|^FINGERPRINT=.*|FINGERPRINT=\"$FINGERPRINT\"|" /etc/sing-box/install.conf
 
 # Определяем IP сервера
 PROXY_IP=$(nslookup "$SERVER" 2>/dev/null | grep -A1 "Name:" | grep "Address" | awk '{print $2}' | head -1)
 [ -z "$PROXY_IP" ] && PROXY_IP=$(ping -c1 "$SERVER" 2>/dev/null | grep "PING" | grep -oE '\([0-9.]*\)' | tr -d '()')
-sed -i "s/^PROXY_IP=.*/PROXY_IP=\"$PROXY_IP\"/" /etc/sing-box/install.conf
+sed -i "s|^PROXY_IP=.*|PROXY_IP=\"$PROXY_IP\"|" /etc/sing-box/install.conf
 
+# Пересоздаем конфиг
 . /etc/sing-box/install.conf
 cat > /etc/sing-box/config.json <<EOF
 {
   "inbounds": [
     {
-      "type": "tproxy",
-      "tag": "tproxy-in",
-      "listen": "127.0.0.1",
+      "type": "redirect",
+      "tag": "redirect-in",
+      "listen": "0.0.0.0",
       "listen_port": 12345,
       "sniff": true,
-      "sniff_override_destination": true
+      "sniff_override_destination": false
     }
   ],
   "outbounds": [
@@ -96,18 +99,36 @@ cat > /etc/sing-box/config.json <<EOF
 }
 EOF
 
-# Обновляем firewall (на случай смены IP)
-if [ -n "$PROXY_IP" ]; then
-    cat > /etc/sing-box/firewall.nft <<NFTEOF
+# Обновляем firewall
+cat > /etc/sing-box/firewall.nft <<'NFTEOF'
 #!/bin/sh
 nft delete table inet singbox 2>/dev/null || true
 nft add table inet singbox
-nft add chain inet singbox prerouting { type filter hook prerouting priority mangle \; }
-nft add rule inet singbox prerouting iifname "br-lan" ip daddr != $PROXY_IP tcp dport != { 22, 53, 123 } meta mark set 1 tproxy ip to 127.0.0.1:12345
+
+nft add chain inet singbox prerouting { type nat hook prerouting priority -100 \; }
+
 NFTEOF
-    chmod +x /etc/sing-box/firewall.nft
-    /etc/sing-box/firewall.nft
+
+if [ -n "$PROXY_IP" ]; then
+    echo "nft add rule inet singbox prerouting iifname br-lan ip daddr $PROXY_IP tcp dport 34014 return" >> /etc/sing-box/firewall.nft
 fi
+
+if [ -n "$ROUTER_IP" ]; then
+    echo "nft add rule inet singbox prerouting iifname br-lan ip daddr $ROUTER_IP return" >> /etc/sing-box/firewall.nft
+fi
+
+cat >> /etc/sing-box/firewall.nft <<'NFTEOF'
+
+nft add rule inet singbox prerouting iifname br-lan ip daddr {192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12} return
+
+nft add rule inet singbox prerouting iifname br-lan tcp dport != 22 redirect to :12345
+
+ip rule add fwmark 1 table 100 2>/dev/null || true
+ip route add local default dev lo table 100 2>/dev/null || true
+NFTEOF
+
+chmod +x /etc/sing-box/firewall.nft
+/etc/sing-box/firewall.nft
 
 /etc/init.d/sing-box restart
 echo "$(date): подписка обновлена" >> /var/log/sing-box-update.log

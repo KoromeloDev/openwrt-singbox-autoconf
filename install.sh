@@ -161,7 +161,14 @@ else
     echo "    IP сервера: $PROXY_IP"
 fi
 
-# ---------- 8. Сохранение параметров ----------
+# ---------- 8. Определение внешнего IP роутера ----------
+ROUTER_IP=$(ip addr show wan 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}')
+if [ -z "$ROUTER_IP" ]; then
+    ROUTER_IP=$(ip addr show eth0 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}')
+fi
+echo "    Внешний IP роутера: $ROUTER_IP"
+
+# ---------- 9. Сохранение параметров ----------
 mkdir -p /etc/sing-box
 cat > /etc/sing-box/install.conf <<EOF
 USE_SUB=$USE_SUB
@@ -176,9 +183,10 @@ SHORT_ID="$SHORT_ID"
 SERVER_NAME="$SERVER_NAME"
 FINGERPRINT="$FINGERPRINT"
 PROXY_IP="$PROXY_IP"
+ROUTER_IP="$ROUTER_IP"
 EOF
 
-# ---------- 9. Генерация конфига ----------
+# ---------- 10. Генерация конфига ----------
 generate_config() {
     . /etc/sing-box/install.conf
 
@@ -186,12 +194,12 @@ generate_config() {
 {
   "inbounds": [
     {
-      "type": "tproxy",
-      "tag": "tproxy-in",
-      "listen": "127.0.0.1",
+      "type": "redirect",
+      "tag": "redirect-in",
+      "listen": "0.0.0.0",
       "listen_port": 12345,
       "sniff": true,
-      "sniff_override_destination": true
+      "sniff_override_destination": false
     }
   ],
   "outbounds": [
@@ -239,43 +247,49 @@ EOF
 generate_config
 echo ">>> Конфиг сохранён в /etc/sing-box/config.json"
 
-# ---------- 10. Создание правил nftables ----------
-echo ">>> Создание правил nftables..."
-cat > /etc/sing-box/firewall.nft <<NFTEOF
+# ---------- 11. Создание правил nftables ----------
+create_firewall_rules() {
+    . /etc/sing-box/install.conf
+
+    cat > /etc/sing-box/firewall.nft <<'NFTEOF'
 #!/bin/sh
 nft delete table inet singbox 2>/dev/null || true
 nft add table inet singbox
-nft add chain inet singbox prerouting { type filter hook prerouting priority mangle \; }
 
-# Правило: всё из LAN (кроме исключений) помечаем меткой 1 и отправляем в TProxy
+nft add chain inet singbox prerouting { type nat hook prerouting priority -100 \; }
+
+# Исключаем прокси-сервер (если IP определен)
 NFTEOF
 
-if [ -n "$PROXY_IP" ]; then
-    echo "nft add rule inet singbox prerouting iifname \"br-lan\" ip daddr != $PROXY_IP tcp dport != { 22, 53, 123 } meta mark set 1 tproxy ip to 127.0.0.1:12345" >> /etc/sing-box/firewall.nft
-else
-    echo "nft add rule inet singbox prerouting iifname \"br-lan\" tcp dport != { 22, 53, 123 } meta mark set 1 tproxy ip to 127.0.0.1:12345" >> /etc/sing-box/firewall.nft
-fi
+    if [ -n "$PROXY_IP" ]; then
+        echo "nft add rule inet singbox prerouting iifname br-lan ip daddr $PROXY_IP tcp dport 34014 return" >> /etc/sing-box/firewall.nft
+    fi
 
-chmod +x /etc/sing-box/firewall.nft
-/etc/sing-box/firewall.nft
+    # Исключаем внешний IP роутера (если определен)
+    if [ -n "$ROUTER_IP" ]; then
+        echo "nft add rule inet singbox prerouting iifname br-lan ip daddr $ROUTER_IP return" >> /etc/sing-box/firewall.nft
+    fi
 
+    cat >> /etc/sing-box/firewall.nft <<'NFTEOF'
+
+# Исключаем локальные сети
+nft add rule inet singbox prerouting iifname br-lan ip daddr {192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12} return
+
+# Всё остальное — через прокси
+nft add rule inet singbox prerouting iifname br-lan tcp dport != 22 redirect to :12345
+
+# Маршрутизация для обратных пакетов
 ip rule add fwmark 1 table 100 2>/dev/null || true
 ip route add local default dev lo table 100 2>/dev/null || true
+NFTEOF
 
-# Убедимся, что rc.local существует и исполняемый
-touch /etc/rc.local
-chmod +x /etc/rc.local
+    chmod +x /etc/sing-box/firewall.nft
+}
 
-# Добавляем правила, если их ещё нет
-if ! grep -q "fwmark 1 table 100" /etc/rc.local 2>/dev/null; then
-    echo "ip rule add fwmark 1 table 100" >> /etc/rc.local
-    echo "ip route add local default dev lo table 100" >> /etc/rc.local
-    echo "/etc/sing-box/firewall.nft" >> /etc/rc.local
-fi
+create_firewall_rules
+/etc/sing-box/firewall.nft
 
-echo ">>> Правила nftables и маршрутизация настроены"
-
-# ---------- 11. Автозапуск ----------
+# ---------- 12. Автозапуск ----------
 if [ -x /etc/init.d/sing-box ]; then
     /etc/init.d/sing-box enable
     /etc/init.d/sing-box restart
@@ -301,7 +315,7 @@ fi
 
 echo ">>> Сервис sing-box запущен и добавлен в автозагрузку"
 
-# ---------- 12. Автообновление подписки ----------
+# ---------- 13. Автообновление подписки ----------
 if [ "$USE_SUB" -eq 1 ]; then
     echo ">>> Загрузка update-sub.sh..."
     mkdir -p /usr/local/bin
