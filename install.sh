@@ -302,10 +302,30 @@ PROG=/usr/bin/sing-box
 CONF=/etc/sing-box/config.json
 
 start_service() {
+    # Применяем правила nftables
+    /etc/sing-box/firewall.nft
+
+    # Маршрутизация
+    ip rule add fwmark 1 table 100 2>/dev/null || true
+    ip route add local default dev lo table 100 2>/dev/null || true
+
+    # Запускаем sing-box
     procd_open_instance
     procd_set_param command "$PROG" run -c "$CONF"
     procd_set_param respawn
     procd_close_instance
+}
+
+stop_service() {
+    # Останавливаем sing-box
+    procd_kill "$PROG" 2>/dev/null || true
+
+    # Удаляем правила nftables
+    nft delete table inet singbox 2>/dev/null || true
+
+    # Удаляем маршрутизацию
+    ip rule del fwmark 1 table 100 2>/dev/null || true
+    ip route del local default dev lo table 100 2>/dev/null || true
 }
 INITEOF
     chmod +x /etc/init.d/sing-box
