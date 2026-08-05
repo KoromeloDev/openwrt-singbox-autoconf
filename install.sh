@@ -290,11 +290,8 @@ create_firewall_rules
 /etc/sing-box/firewall.nft
 
 # ---------- 12. Автозапуск ----------
-if [ -x /etc/init.d/sing-box ]; then
-    /etc/init.d/sing-box enable
-    /etc/init.d/sing-box restart
-else
-    cat > /etc/init.d/sing-box <<'INITEOF'
+# Всегда перезаписываем init-скрипт нашим собственным
+cat > /etc/init.d/sing-box <<'INITEOF'
 #!/bin/sh /etc/rc.common
 START=90
 USE_PROCD=1
@@ -328,10 +325,10 @@ stop_service() {
     ip route del local default dev lo table 100 2>/dev/null || true
 }
 INITEOF
-    chmod +x /etc/init.d/sing-box
-    /etc/init.d/sing-box enable
-    /etc/init.d/sing-box restart
-fi
+
+chmod +x /etc/init.d/sing-box
+/etc/init.d/sing-box enable
+/etc/init.d/sing-box restart
 
 echo ">>> Сервис sing-box запущен и добавлен в автозагрузку"
 
